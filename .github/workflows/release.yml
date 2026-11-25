@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build release
+        run: cargo build --release
+      - name: prepare assets and SHA256
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/windowkeeper.exe dist/WindowKeeper.exe
+          $hash = (Get-FileHash dist/WindowKeeper.exe -Algorithm SHA256).Hash.ToLower()
+          # Format "<hash>  <file>" (two spaces), no BOM
+          [System.IO.File]::WriteAllText("$PWD/dist/WindowKeeper.exe.sha256", "$hash  WindowKeeper.exe`n")
+          Get-Content dist/WindowKeeper.exe.sha256
+      - name: create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/WindowKeeper.exe
+            dist/WindowKeeper.exe.sha256
+          generate_release_notes: true

@@ -1,0 +1,13 @@
+/target
+# Runtime data when running from the repo / build folder
+/data/
+data/
+*.exe.old
+*.exe.new
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
