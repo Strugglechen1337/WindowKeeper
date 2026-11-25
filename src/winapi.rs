@@ -268,6 +268,7 @@ fn describe_window(
                 rect,
                 monitor: MonitorRef::from_desc(mon),
             },
+            ignored: false,
         })
     }
 }

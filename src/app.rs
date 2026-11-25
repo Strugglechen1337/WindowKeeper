@@ -2,14 +2,17 @@
 
 use crate::config::Config;
 use crate::layout::{Entry, Layout};
-use crate::matching::match_windows;
+use crate::matching::Identity;
+use crate::state::RunState;
+use crate::ui_model::{exe_file_name, Bridge, UiCommand, UpdateStatus};
 use crate::winapi::{self, hwnd_from};
-use crate::{autostart, icon, logger, updater, APP_NAME, APP_VERSION};
+use crate::{autostart, gui, icon, logger, updater, APP_NAME, APP_VERSION};
 use crate::{log_error, log_info, log_warn};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
@@ -28,6 +31,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_WINEVENT: u32 = WM_APP + 2;
 const WM_APP_QUIT: u32 = WM_APP + 3;
+const WM_APP_UI: u32 = WM_APP + 4;
 
 const TIMER_SAVE: usize = 1;
 const TIMER_APPLY: usize = 2;
@@ -35,6 +39,7 @@ const TIMER_SCAN: usize = 3;
 const TIMER_UPDATE: usize = 4;
 const TIMER_WATCH_END: usize = 5;
 
+const ID_OPEN: usize = 1000;
 const ID_SAVE: usize = 1001;
 const ID_RESTORE: usize = 1002;
 const ID_AUTOSAVE: usize = 1003;
@@ -54,6 +59,29 @@ const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 static LOC_PENDING: AtomicBool = AtomicBool::new(false);
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+static BRIDGE: OnceLock<Arc<Bridge>> = OnceLock::new();
+
+/// The channel to the GUI thread (created once in [`run`]).
+fn bridge() -> &'static Arc<Bridge> {
+    BRIDGE.get_or_init(|| {
+        Bridge::new(|| {
+            let main = MAIN_HWND.load(Ordering::SeqCst);
+            if main != 0 {
+                unsafe {
+                    let _ = PostMessageW(hwnd_from(main), WM_APP_UI, WPARAM(0), LPARAM(0));
+                }
+            }
+        })
+    })
+}
+
+/// Who started an update check (decides which result dialogs are shown).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateSource {
+    Auto,
+    Tray,
+    Gui,
+}
 
 struct App {
     hwnd: HWND,
@@ -62,6 +90,8 @@ struct App {
     cfg_path: PathBuf,
     layout: Layout,
     layout_path: PathBuf,
+    state: RunState,
+    state_path: PathBuf,
     last_saved: String,
     watch_until: Option<Instant>,
     handled: HashSet<isize>,
@@ -153,6 +183,8 @@ pub fn run() {
         let _ = cfg.save(&cfg_path);
     }
     let layout_path = data_dir.join("layout.json");
+    let state_path = data_dir.join("state.json");
+    let state = RunState::load(&state_path);
     let layout = match Layout::load(&layout_path) {
         Ok(l) => l,
         Err(e) => {
@@ -199,6 +231,7 @@ pub fn run() {
         };
         MAIN_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
+        let _ = bridge();
         let hicon = create_icon();
         let first_run = !cfg.first_run_done;
         let watch_minutes = cfg.restore_watch_minutes;
@@ -212,6 +245,8 @@ pub fn run() {
             cfg_path,
             layout,
             layout_path,
+            state,
+            state_path,
             last_saved: String::new(),
             watch_until: None,
             handled: HashSet::new(),
@@ -241,7 +276,7 @@ pub fn run() {
                 balloon(
                     app,
                     "WindowKeeper läuft im Infobereich der Taskleiste. \
-                     Rechtsklick auf das Symbol öffnet das Menü.",
+                     Linksklick auf das Symbol öffnet die Übersicht, Rechtsklick das Menü.",
                 );
                 app.cfg.first_run_done = true;
                 save_config(app);
@@ -349,6 +384,8 @@ fn show_menu(hwnd: HWND) {
             let t = wide(text);
             let _ = AppendMenuW(menu, MF_STRING | flags, id, PCWSTR(t.as_ptr()));
         };
+        add(ID_OPEN, MENU_ITEM_FLAGS(0), "Übersicht öffnen");
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         add(ID_SAVE, MENU_ITEM_FLAGS(0), "Layout jetzt speichern");
         add(
             ID_RESTORE,
@@ -370,6 +407,7 @@ fn show_menu(hwnd: HWND) {
         add(ID_UPDATE, MENU_ITEM_FLAGS(0), "Nach Updates suchen");
         add(ID_QUIT, MENU_ITEM_FLAGS(0), "Beenden");
 
+        let _ = SetMenuDefaultItem(menu, ID_OPEN as u32, 0);
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
         let _ = SetForegroundWindow(hwnd);
@@ -393,6 +431,7 @@ fn show_menu(hwnd: HWND) {
 
 fn on_command(hwnd: HWND, id: usize) {
     match id {
+        ID_OPEN => open_gui(),
         ID_SAVE => {
             with_app(|app| {
                 let n = snapshot(app, true);
@@ -419,20 +458,172 @@ fn on_command(hwnd: HWND, id: usize) {
         ID_AUTOSTART => {
             with_app(|app| {
                 let want = !autostart::is_enabled();
-                match autostart::set(want, &app.exe) {
-                    Ok(()) => log_info!("Autostart: {want}"),
-                    Err(e) => {
-                        log_error!("Autostart fehlgeschlagen: {e}");
-                        balloon(app, "Autostart konnte nicht geändert werden.");
-                    }
+                if !set_autostart(app, want) {
+                    balloon(app, "Autostart konnte nicht geändert werden.");
                 }
             });
         }
-        ID_UPDATE => start_update_check(true),
+        ID_UPDATE => start_update_check(UpdateSource::Tray),
         ID_QUIT => unsafe {
             let _ = DestroyWindow(hwnd);
         },
         _ => {}
+    }
+    with_app(|app| publish(app, false));
+}
+
+fn set_autostart(app: &App, want: bool) -> bool {
+    match autostart::set(want, &app.exe) {
+        Ok(()) => {
+            log_info!("Autostart: {want}");
+            true
+        }
+        Err(e) => {
+            log_error!("Autostart fehlgeschlagen: {e}");
+            false
+        }
+    }
+}
+
+// ------------------------------------------------------------------- gui ----
+
+/// Open the overview window or bring the open one to the front.
+fn open_gui() {
+    with_app(|app| publish(app, true));
+    gui::open_or_focus(bridge().clone());
+}
+
+/// Copy the current state into the snapshot the GUI renders. Skipped while
+/// no GUI window exists (unless `force`).
+fn publish(app: &App, force: bool) {
+    let b = bridge();
+    if !force && !b.is_ui_open() {
+        return;
+    }
+    let watching = app.watch_until.is_some_and(|t| Instant::now() < t);
+    let autostart = autostart::is_enabled();
+    b.update(|s| {
+        s.settings = app.cfg.settings();
+        s.autostart = autostart;
+        s.last_save_at = app.state.last_save_at;
+        s.last_restore_at = app.state.last_restore_at;
+        s.last_update_check = app.cfg.last_update_check;
+        s.watching = watching;
+        s.entries = app.layout.windows.clone();
+    });
+}
+
+fn handle_ui_command(cmd: UiCommand) {
+    let b = bridge();
+    match cmd {
+        UiCommand::CheckUpdates => {
+            start_update_check(UpdateSource::Gui);
+            return;
+        }
+        UiCommand::SaveLayout => {
+            with_app(|app| {
+                let n = snapshot(app, true);
+                b.notify(format!("Layout gespeichert ({n} Fenster)."));
+            });
+        }
+        UiCommand::RestoreAll => {
+            with_app(|app| {
+                let n = restore(app, true);
+                b.notify(format!("{n} Fenster wiederhergestellt."));
+            });
+        }
+        UiCommand::RestoreEntry(id) => {
+            with_app(|app| restore_entry(app, &id));
+        }
+        UiCommand::SetIgnored(id, ignored) => {
+            with_app(|app| {
+                if let Some(i) = app.layout.position_of(&id) {
+                    app.layout.windows[i].ignored = ignored;
+                    write_layout(app);
+                }
+            });
+        }
+        UiCommand::DeleteEntry(id) => {
+            with_app(|app| {
+                if let Some(i) = app.layout.position_of(&id) {
+                    app.layout.windows.remove(i);
+                    write_layout(app);
+                }
+            });
+        }
+        UiCommand::SetAutostart(want) => {
+            with_app(|app| {
+                if !set_autostart(app, want) {
+                    b.notify("Autostart konnte nicht geändert werden.");
+                }
+            });
+        }
+        UiCommand::SetSettings(edit) => {
+            with_app(|app| {
+                let old_scan = app.cfg.scan_interval_secs;
+                if app.cfg.apply_settings(&edit) {
+                    save_config(app);
+                    log_info!("Einstellungen über die Oberfläche geändert");
+                }
+                if app.cfg.scan_interval_secs != old_scan {
+                    unsafe {
+                        SetTimer(
+                            app.hwnd,
+                            TIMER_SCAN,
+                            app.cfg.scan_interval_secs * 1000,
+                            None,
+                        );
+                    }
+                }
+            });
+        }
+    }
+    with_app(|app| publish(app, false));
+}
+
+/// Restore a single saved entry (also if it is ignored). Never starts programs.
+fn restore_entry(app: &mut App, id: &Identity) {
+    let b = bridge();
+    let Some(idx) = app.layout.position_of(id) else {
+        b.notify("Der Eintrag existiert nicht mehr.");
+        return;
+    };
+    let name = exe_file_name(&id.exe_path).to_string();
+    let mons = winapi::monitors();
+    let live = winapi::enumerate(&mons);
+    let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
+    let Some(li) = app.layout.live_index_for(idx, &live_ids) else {
+        b.notify(format!(
+            "„{name}“ ist nicht geöffnet – es wurde nichts gestartet."
+        ));
+        return;
+    };
+    let hwnd = live[li].hwnd;
+    if winapi::apply(hwnd, &app.layout.windows[idx].placement, &mons) {
+        app.handled.insert(hwnd);
+        app.suppress_until = Instant::now() + Duration::from_millis(2500);
+        mark_restored(app);
+        b.notify(format!("Fenster von „{name}“ wiederhergestellt."));
+    } else {
+        b.notify(format!(
+            "Das Fenster von „{name}“ konnte nicht verschoben werden."
+        ));
+    }
+}
+
+fn mark_saved(app: &mut App) {
+    app.state.last_save_at = logger::now_secs();
+    save_state(app);
+}
+
+fn mark_restored(app: &mut App) {
+    app.state.last_restore_at = logger::now_secs();
+    save_state(app);
+}
+
+fn save_state(app: &App) {
+    if let Err(e) = app.state.save(&app.state_path) {
+        log_error!("state.json konnte nicht gespeichert werden: {e}");
     }
 }
 
@@ -550,14 +741,21 @@ fn arm_save(app: &mut App, restart: bool) {
     }
 }
 
-fn write_layout(app: &mut App) {
+/// Write the layout if it changed. Returns true if the file was written.
+fn write_layout(app: &mut App) -> bool {
     let json = app.layout.to_json();
     if json == app.last_saved {
-        return;
+        return false;
     }
     match app.layout.save(&app.layout_path) {
-        Ok(()) => app.last_saved = json,
-        Err(e) => log_error!("layout.json konnte nicht gespeichert werden: {e}"),
+        Ok(()) => {
+            app.last_saved = json;
+            true
+        }
+        Err(e) => {
+            log_error!("layout.json konnte nicht gespeichert werden: {e}");
+            false
+        }
     }
 }
 
@@ -572,9 +770,8 @@ fn snapshot(app: &mut App, manual: bool) -> usize {
     let mut live = winapi::enumerate(&mons);
     let watching = app.watch_until.is_some_and(|t| Instant::now() < t);
     if !manual && watching {
-        let ids: Vec<_> = app.layout.identities();
         let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-        let matches = match_windows(&ids, &live_ids);
+        let matches = app.layout.restore_plan(&live_ids);
         let mut keep = matches.iter();
         live.retain(|l| {
             let m = keep.next().copied().flatten();
@@ -584,7 +781,10 @@ fn snapshot(app: &mut App, manual: bool) -> usize {
     let n = live.len();
     let entries: Vec<Entry> = live.into_iter().map(|l| l.entry).collect();
     app.layout.merge(entries);
-    write_layout(app);
+    if write_layout(app) || manual {
+        mark_saved(app);
+    }
+    publish(app, false);
     n
 }
 
@@ -595,9 +795,8 @@ fn restore(app: &mut App, manual: bool) -> usize {
         return 0;
     }
     let live = winapi::enumerate(&mons);
-    let saved_ids = app.layout.identities();
     let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-    let matches = match_windows(&saved_ids, &live_ids);
+    let matches = app.layout.restore_plan(&live_ids);
     let mut n = 0;
     for (l, m) in live.iter().zip(&matches) {
         app.handled.insert(l.hwnd);
@@ -608,9 +807,13 @@ fn restore(app: &mut App, manual: bool) -> usize {
         }
     }
     app.suppress_until = Instant::now() + Duration::from_millis(2500);
+    if n > 0 {
+        mark_restored(app);
+    }
     if manual {
         log_info!("Manuelle Wiederherstellung: {n} Fenster");
     }
+    publish(app, false);
     n
 }
 
@@ -626,15 +829,16 @@ fn process_pending(app: &mut App) {
     if !due.is_empty() {
         let mons = winapi::monitors();
         let live = winapi::enumerate(&mons);
-        let saved_ids = app.layout.identities();
         let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-        let matches = match_windows(&saved_ids, &live_ids);
+        let matches = app.layout.restore_plan(&live_ids);
+        let mut restored_any = false;
         for id in due {
             let (_, attempts) = app.pending.remove(&id).unwrap_or((now, 0));
             let found = live.iter().position(|l| l.hwnd == id);
             match found.and_then(|i| matches[i]) {
                 Some(si) => {
                     if winapi::apply(id, &app.layout.windows[si].placement, &mons) {
+                        restored_any = true;
                         log_info!(
                             "Spätes Fenster wiederhergestellt: {}",
                             app.layout.windows[si].identity.title
@@ -653,6 +857,10 @@ fn process_pending(app: &mut App) {
                 }
             }
         }
+        if restored_any {
+            mark_restored(app);
+            publish(app, false);
+        }
     }
     if app.pending.is_empty() {
         unsafe {
@@ -663,29 +871,38 @@ fn process_pending(app: &mut App) {
 
 // --------------------------------------------------------------- updater ----
 
-fn start_update_check(manual: bool) {
+fn start_update_check(source: UpdateSource) {
     if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
     let Some(exe) = with_app(|app| {
         app.cfg.last_update_check = logger::now_secs();
         save_config(app);
+        publish(app, false);
         app.exe.clone()
     }) else {
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
         return;
     };
+    bridge().update(|s| s.update = UpdateStatus::Checking);
     std::thread::spawn(move || {
-        update_flow(manual, &exe);
+        update_flow(source, &exe);
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
     });
 }
 
-fn update_flow(manual: bool, exe: &std::path::Path) {
+fn set_update_status(status: UpdateStatus) {
+    bridge().update(|s| s.update = status);
+}
+
+fn update_flow(source: UpdateSource, exe: &std::path::Path) {
+    // The GUI shows results itself; message boxes are for the tray menu only.
+    let manual = source == UpdateSource::Tray;
     let update = match updater::check(APP_VERSION) {
         Ok(Some(u)) => u,
         Ok(None) => {
             log_info!("Kein Update verfügbar");
+            set_update_status(UpdateStatus::UpToDate);
             if manual {
                 message_box(
                     &format!("Sie verwenden bereits die aktuelle Version ({APP_VERSION})."),
@@ -697,12 +914,14 @@ fn update_flow(manual: bool, exe: &std::path::Path) {
         }
         Err(e) => {
             log_warn!("Update-Prüfung: {e}");
+            set_update_status(UpdateStatus::Failed(e.clone()));
             if manual {
                 message_box(&e, APP_NAME, MB_OK | MB_ICONWARNING);
             }
             return;
         }
     };
+    set_update_status(UpdateStatus::Available(update.version.clone()));
     let q = format!(
         "Eine neue Version von WindowKeeper ist verfügbar: {} (installiert: {APP_VERSION}).\n\n\
          Jetzt herunterladen und installieren? WindowKeeper startet danach neu.",
@@ -711,6 +930,7 @@ fn update_flow(manual: bool, exe: &std::path::Path) {
     if message_box(&q, "WindowKeeper – Update", MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
+    set_update_status(UpdateStatus::Checking);
     let new_file = updater::new_path(exe);
     let result = updater::download_verified(&update, &new_file).and_then(|()| {
         updater::swap_in(exe, &new_file)?;
@@ -730,6 +950,7 @@ fn update_flow(manual: bool, exe: &std::path::Path) {
         }
         Err(e) => {
             log_error!("Update fehlgeschlagen: {e}");
+            set_update_status(UpdateStatus::Failed(e.clone()));
             message_box(
                 &format!("Das Update konnte nicht installiert werden:\n{e}"),
                 APP_NAME,
@@ -754,8 +975,16 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     match msg {
         WM_APP_TRAY => {
             let m = (lp.0 as u32) & 0xFFFF;
-            if m == WM_RBUTTONUP || m == WM_LBUTTONUP || m == WM_CONTEXTMENU {
+            if m == WM_RBUTTONUP || m == WM_CONTEXTMENU {
                 show_menu(hwnd);
+            } else if m == WM_LBUTTONUP || m == WM_LBUTTONDBLCLK {
+                open_gui();
+            }
+            Some(LRESULT(0))
+        }
+        WM_APP_UI => {
+            for cmd in bridge().take_commands() {
+                handle_ui_command(cmd);
             }
             Some(LRESULT(0))
         }
@@ -792,6 +1021,7 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                     app.watch_until = None;
                     app.pending.clear();
                     log_info!("Beobachtung später Fenster beendet");
+                    publish(app, false);
                 }
                 _ => {}
             });
@@ -799,7 +1029,7 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                 unsafe {
                     let _ = KillTimer(hwnd, TIMER_UPDATE);
                 }
-                start_update_check(false);
+                start_update_check(UpdateSource::Auto);
             }
             Some(LRESULT(0))
         }

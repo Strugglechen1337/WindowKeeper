@@ -21,3 +21,14 @@ jobs:
         run: cargo test
       - name: build release
         run: cargo build --release
+      - name: prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/windowkeeper.exe dist/WindowKeeper.exe
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WindowKeeper
+          path: dist/WindowKeeper.exe
+          if-no-files-found: error

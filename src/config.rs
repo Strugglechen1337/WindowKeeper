@@ -2,7 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::ops::RangeInclusive;
 use std::path::Path;
+
+/// Allowed range of the auto-save debounce (milliseconds).
+pub const DEBOUNCE_MS: RangeInclusive<u32> = 200..=60_000;
+/// Allowed range of the background scan interval (seconds).
+pub const SCAN_INTERVAL_SECS: RangeInclusive<u32> = 5..=3600;
+/// Upper bound of the late-window watch time (minutes).
+pub const WATCH_MINUTES_MAX: u32 = 24 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -23,6 +31,22 @@ pub struct Config {
     pub first_run_done: bool,
 }
 
+/// The user editable subset of [`Config`] (what the settings page shows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsEdit {
+    pub auto_save: bool,
+    pub restore_watch_minutes: u32,
+    pub debounce_ms: u32,
+    pub scan_interval_secs: u32,
+    pub check_updates_on_start: bool,
+}
+
+impl Default for SettingsEdit {
+    fn default() -> Self {
+        Config::default().settings()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -40,10 +64,37 @@ impl Default for Config {
 impl Config {
     /// Bring values into sane ranges.
     pub fn sanitized(mut self) -> Self {
-        self.restore_watch_minutes = self.restore_watch_minutes.min(24 * 60);
-        self.debounce_ms = self.debounce_ms.clamp(200, 60_000);
-        self.scan_interval_secs = self.scan_interval_secs.clamp(5, 3600);
+        self.restore_watch_minutes = self.restore_watch_minutes.min(WATCH_MINUTES_MAX);
+        self.debounce_ms = self
+            .debounce_ms
+            .clamp(*DEBOUNCE_MS.start(), *DEBOUNCE_MS.end());
+        self.scan_interval_secs = self
+            .scan_interval_secs
+            .clamp(*SCAN_INTERVAL_SECS.start(), *SCAN_INTERVAL_SECS.end());
         self
+    }
+
+    /// Apply the values edited in the GUI (sanitized). Returns true if
+    /// anything changed.
+    pub fn apply_settings(&mut self, s: &SettingsEdit) -> bool {
+        let before = self.clone();
+        self.auto_save = s.auto_save;
+        self.restore_watch_minutes = s.restore_watch_minutes;
+        self.debounce_ms = s.debounce_ms;
+        self.scan_interval_secs = s.scan_interval_secs;
+        self.check_updates_on_start = s.check_updates_on_start;
+        *self = self.clone().sanitized();
+        *self != before
+    }
+
+    pub fn settings(&self) -> SettingsEdit {
+        SettingsEdit {
+            auto_save: self.auto_save,
+            restore_watch_minutes: self.restore_watch_minutes,
+            debounce_ms: self.debounce_ms,
+            scan_interval_secs: self.scan_interval_secs,
+            check_updates_on_start: self.check_updates_on_start,
+        }
     }
 
     pub fn from_toml(text: &str) -> Result<Config, toml::de::Error> {
@@ -127,5 +178,27 @@ mod tests {
         c.save(&p).unwrap();
         assert_eq!(Config::load_or_default(&p).0, c);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_settings_sanitizes_and_keeps_internal_fields() {
+        let mut c = Config {
+            last_update_check: 7,
+            first_run_done: true,
+            ..Config::default()
+        };
+        let mut e = c.settings();
+        assert!(!c.apply_settings(&e));
+        e.debounce_ms = 5;
+        e.scan_interval_secs = 99_999;
+        e.restore_watch_minutes = 100_000;
+        e.auto_save = false;
+        assert!(c.apply_settings(&e));
+        assert_eq!(c.debounce_ms, 200);
+        assert_eq!(c.scan_interval_secs, 3600);
+        assert_eq!(c.restore_watch_minutes, 24 * 60);
+        assert!(!c.auto_save);
+        assert_eq!(c.last_update_check, 7);
+        assert!(c.first_run_done);
     }
 }

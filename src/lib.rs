@@ -12,11 +12,15 @@ pub mod layout;
 pub mod logger;
 pub mod matching;
 pub mod paths;
+pub mod state;
+pub mod ui_model;
 pub mod updater;
 pub mod version;
 
 #[cfg(windows)]
 pub mod app;
+#[cfg(windows)]
+pub mod gui;
 #[cfg(windows)]
 pub mod winapi;
 
