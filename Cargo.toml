@@ -1,6 +1,6 @@
 [package]
 name = "windowkeeper"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Strugglechen1337"]
 description = "Portable Windows-Tray-App, die Fensterpositionen speichert und wiederherstellt"

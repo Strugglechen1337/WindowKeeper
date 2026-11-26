@@ -13,6 +13,7 @@ pub mod logger;
 pub mod matching;
 pub mod paths;
 pub mod state;
+pub mod tray_event;
 pub mod ui_model;
 pub mod updater;
 pub mod version;

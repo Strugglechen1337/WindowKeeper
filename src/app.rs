@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::layout::{Entry, Layout};
 use crate::matching::Identity;
 use crate::state::RunState;
+use crate::tray_event::{decode, TrayAction};
 use crate::ui_model::{exe_file_name, Bridge, UiCommand, UpdateStatus};
 use crate::winapi::{self, hwnd_from};
 use crate::{autostart, gui, icon, logger, updater, APP_NAME, APP_VERSION};
@@ -24,7 +25,7 @@ use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -59,6 +60,8 @@ const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 static LOC_PENDING: AtomicBool = AtomicBool::new(false);
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+/// True once the shell accepted NOTIFYICON_VERSION_4 for the tray icon.
+static TRAY_V4: AtomicBool = AtomicBool::new(false);
 static BRIDGE: OnceLock<Arc<Bridge>> = OnceLock::new();
 
 /// The channel to the GUI thread (created once in [`run`]).
@@ -356,6 +359,12 @@ fn nid(app: &App) -> NOTIFYICONDATAW {
 fn tray_add(app: &App) {
     unsafe {
         let _ = Shell_NotifyIconW(NIM_ADD, &nid(app));
+        // Opt in to the modern callback protocol (WM_CONTEXTMENU / NIN_SELECT);
+        // must be repeated after every NIM_ADD (e.g. after an Explorer restart).
+        let mut n = nid(app);
+        n.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        let ok = Shell_NotifyIconW(NIM_SETVERSION, &n).as_bool();
+        TRAY_V4.store(ok, Ordering::SeqCst);
     }
 }
 
@@ -974,11 +983,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     match msg {
         WM_APP_TRAY => {
-            let m = (lp.0 as u32) & 0xFFFF;
-            if m == WM_RBUTTONUP || m == WM_CONTEXTMENU {
-                show_menu(hwnd);
-            } else if m == WM_LBUTTONUP || m == WM_LBUTTONDBLCLK {
-                open_gui();
+            match decode(lp.0, TRAY_V4.load(Ordering::SeqCst)) {
+                TrayAction::ShowMenu => show_menu(hwnd),
+                TrayAction::OpenOverview => open_gui(),
+                TrayAction::Ignore => {}
             }
             Some(LRESULT(0))
         }
