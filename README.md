@@ -54,13 +54,13 @@ Dunkel und hell werden automatisch nach der Windows-Einstellung gewählt. *(Beis
 
 ## Download und Installation
 
-Das aktuelle Release ist **[WindowKeeper 0.1.0](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.0)**.
+Das aktuelle Release ist **[WindowKeeper 0.1.1](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.1)**.
 
-1. [`WindowKeeper.exe`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.0/WindowKeeper.exe) herunterladen (zur Prüfung zusätzlich [`WindowKeeper.exe.sha256`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.0/WindowKeeper.exe.sha256)).
+1. [`WindowKeeper.exe`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.1/WindowKeeper.exe) herunterladen (zur Prüfung zusätzlich [`WindowKeeper.exe.sha256`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.1/WindowKeeper.exe.sha256)).
 2. Die EXE in einen **beschreibbaren Ordner** legen (z. B. `C:\Tools\WindowKeeper\`).
 3. Starten und im **Infobereich der Taskleiste** nachsehen (ggf. hinter dem Pfeil „Ausgeblendete Symbole“). Beim ersten Start erscheint ein Hinweis.
 
-SHA256 von `WindowKeeper.exe` in v0.1.0: `14e3b42bfbdc0b05a227abba5d8953a9d53b4c14c3ddcd00f323d0f2e87d865a`
+SHA256 von `WindowKeeper.exe` in v0.1.1 steht in der Release-Datei [`WindowKeeper.exe.sha256`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.1/WindowKeeper.exe.sha256) (wird vom Release-Workflow auf windows-latest erzeugt).
 
 Neuere Versionen finden Sie unter [Releases](https://github.com/Strugglechen1337/WindowKeeper/releases). Entwicklungsstände ohne Release liegen weiterhin als Artefakt **`WindowKeeper`** auf dem Tab [Actions](https://github.com/Strugglechen1337/WindowKeeper/actions/workflows/ci.yml) (GitHub-Login nötig).
 
@@ -157,7 +157,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-Die Tray-App selbst baut nur unter Windows. Die CI (`.github/workflows/ci.yml`) lädt die gebaute EXE zusätzlich als Artefakt `WindowKeeper` hoch. Ein Release (wie [v0.1.0](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.0)) entsteht, wenn ein Tag `vX.Y.Z` gepusht wird; der Workflow lädt dann `WindowKeeper.exe` und `WindowKeeper.exe.sha256` hoch.
+Die Tray-App selbst baut nur unter Windows. Die CI (`.github/workflows/ci.yml`) lädt die gebaute EXE zusätzlich als Artefakt `WindowKeeper` hoch. Ein Release (wie [v0.1.1](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.1)) entsteht, wenn ein Tag `vX.Y.Z` gepusht wird; der Workflow lädt dann `WindowKeeper.exe` und `WindowKeeper.exe.sha256` hoch.
 
 ### Screenshots neu erzeugen
 
