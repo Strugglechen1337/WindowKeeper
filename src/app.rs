@@ -24,8 +24,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -39,6 +39,7 @@ const TIMER_APPLY: usize = 2;
 const TIMER_SCAN: usize = 3;
 const TIMER_UPDATE: usize = 4;
 const TIMER_WATCH_END: usize = 5;
+const TIMER_TRAY: usize = 6;
 
 const ID_OPEN: usize = 1000;
 const ID_SAVE: usize = 1001;
@@ -62,6 +63,8 @@ static LOC_PENDING: AtomicBool = AtomicBool::new(false);
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// True once the shell accepted NOTIFYICON_VERSION_4 for the tray icon.
 static TRAY_V4: AtomicBool = AtomicBool::new(false);
+/// True while the tray context menu runs its nested loop (ignore re-entrant clicks).
+static MENU_OPEN: AtomicBool = AtomicBool::new(false);
 static BRIDGE: OnceLock<Arc<Bridge>> = OnceLock::new();
 
 /// The channel to the GUI thread (created once in [`run`]).
@@ -267,6 +270,7 @@ pub fn run() {
             tray_add(app);
             install_hooks(app);
             SetTimer(app.hwnd, TIMER_SCAN, scan_ms, None);
+            SetTimer(app.hwnd, TIMER_TRAY, 30_000, None);
             // Startup: restore, then keep watching for late windows.
             let n = restore(app, false);
             log_info!("Start-Wiederherstellung: {n} Fenster");
@@ -349,7 +353,7 @@ fn nid(app: &App) -> NOTIFYICONDATAW {
         uID: 1,
         ..Default::default()
     };
-    n.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    n.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     n.uCallbackMessage = WM_APP_TRAY;
     n.hIcon = app.hicon;
     copy_wide(&mut n.szTip, "WindowKeeper – Fensterlayout merken");
@@ -368,6 +372,16 @@ fn tray_add(app: &App) {
     }
 }
 
+/// Make sure the icon still exists in the shell; re-add it if the shell lost it
+/// (Explorer hiccup, missed `TaskbarCreated`, sleep/resume, remote session).
+fn tray_check(app: &App) {
+    let alive = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid(app)).as_bool() };
+    if !alive {
+        log_warn!("Tray-Symbol fehlt in der Shell – wird neu angelegt");
+        tray_add(app);
+    }
+}
+
 fn balloon(app: &App, text: &str) {
     let mut n = nid(app);
     n.uFlags |= NIF_INFO;
@@ -379,13 +393,34 @@ fn balloon(app: &App, text: &str) {
     }
 }
 
-fn show_menu(hwnd: HWND) {
-    let Some((auto_save, auto_start)) = with_app(|a| (a.cfg.auto_save, autostart::is_enabled()))
-    else {
+/// In `NOTIFYICON_VERSION_4` the icon position (screen coordinates) is packed
+/// into `wParam` as signed 16-bit values. `None` if it looks unset.
+fn tray_anchor(wparam: usize) -> Option<POINT> {
+    let x = (wparam & 0xFFFF) as u16 as i16 as i32;
+    let y = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+    (x != 0 || y != 0).then_some(POINT { x, y })
+}
+
+fn show_menu(hwnd: HWND, anchor: Option<POINT>) {
+    // A menu is already open (nested loop): a second one would never appear.
+    if MENU_OPEN.swap(true, Ordering::SeqCst) {
         return;
-    };
+    }
+    show_menu_inner(hwnd, anchor);
+    MENU_OPEN.store(false, Ordering::SeqCst);
+}
+
+fn show_menu_inner(hwnd: HWND, anchor: Option<POINT>) {
+    // Never fail silently: if the state is busy, still show the menu.
+    let (auto_save, auto_start) = with_app(|a| a.cfg.auto_save)
+        .map(|s| (s, autostart::is_enabled()))
+        .unwrap_or_else(|| {
+            log_warn!("Tray-Menü: Zustand belegt, zeige Menü mit Standardwerten");
+            (false, autostart::is_enabled())
+        });
     unsafe {
         let Ok(menu) = CreatePopupMenu() else {
+            log_error!("Tray-Menü: CreatePopupMenu fehlgeschlagen");
             return;
         };
         let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
@@ -417,9 +452,14 @@ fn show_menu(hwnd: HWND) {
         add(ID_QUIT, MENU_ITEM_FLAGS(0), "Beenden");
 
         let _ = SetMenuDefaultItem(menu, ID_OPEN as u32, 0);
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let _ = SetForegroundWindow(hwnd);
+        let pt = anchor.unwrap_or_else(|| {
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            pt
+        });
+        if !SetForegroundWindow(hwnd).as_bool() {
+            log_warn!("Tray-Menü: SetForegroundWindow abgelehnt");
+        }
         // The app state must not be borrowed here: the menu runs a nested loop.
         let cmd = TrackPopupMenu(
             menu,
@@ -983,8 +1023,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     match msg {
         WM_APP_TRAY => {
-            match decode(lp.0, TRAY_V4.load(Ordering::SeqCst)) {
-                TrayAction::ShowMenu => show_menu(hwnd),
+            let v4 = TRAY_V4.load(Ordering::SeqCst);
+            match decode(lp.0, v4) {
+                TrayAction::ShowMenu => show_menu(hwnd, if v4 { tray_anchor(wp.0) } else { None }),
                 TrayAction::OpenOverview => open_gui(),
                 TrayAction::Ignore => {}
             }
@@ -1022,6 +1063,7 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                     }
                 }
                 TIMER_APPLY => process_pending(app),
+                TIMER_TRAY => tray_check(app),
                 TIMER_WATCH_END => {
                     unsafe {
                         let _ = KillTimer(app.hwnd, TIMER_WATCH_END);
