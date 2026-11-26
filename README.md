@@ -147,6 +147,11 @@ git clone https://github.com/Strugglechen1337/WindowKeeper.git
 cd WindowKeeper
 cargo build --release
 # Ergebnis: target\release\windowkeeper.exe
+
+# Native ARM64-Version (Windows on ARM), auch per Cross-Build von x64 aus möglich:
+rustup target add aarch64-pc-windows-msvc
+cargo build --release --target aarch64-pc-windows-msvc
+# Ergebnis: target\aarch64-pc-windows-msvc\release\windowkeeper.exe
 ```
 
 Die Logik (Fenster-Matching, Monitor-Fallback, Versionsvergleich, Konfiguration, Updater-Parser) ist plattformunabhängig und lässt sich auch unter Linux testen:
@@ -157,7 +162,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-Die Tray-App selbst baut nur unter Windows. Die CI (`.github/workflows/ci.yml`) lädt die gebaute EXE zusätzlich als Artefakt `WindowKeeper` hoch. Ein Release (wie [v0.1.1](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.1)) entsteht, wenn ein Tag `vX.Y.Z` gepusht wird; der Workflow lädt dann `WindowKeeper.exe` und `WindowKeeper.exe.sha256` hoch.
+Die Tray-App selbst baut nur unter Windows. Die CI (`.github/workflows/ci.yml`) lädt die gebaute EXE zusätzlich als Artefakt `WindowKeeper` hoch. Ein Release (wie [v0.1.1](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.1)) entsteht, wenn ein Tag `vX.Y.Z` gepusht wird; der Workflow baut x64 und nativ ARM64 (Runner `windows-11-arm`) und lädt `WindowKeeper.exe`, `WindowKeeper-arm64.exe` sowie die jeweilige `.sha256` hoch. Der Selbst-Updater wählt automatisch die Datei zur eigenen Architektur.
 
 ### Screenshots neu erzeugen
 

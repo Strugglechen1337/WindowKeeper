@@ -53,18 +53,42 @@ pub fn is_trusted_url(url: &str) -> bool {
         || host.ends_with(".githubusercontent.com")
 }
 
-/// Pick the EXE asset and the checksum asset of a release.
+/// Asset base name for the architecture this binary was built for. x64 keeps
+/// the historical name `WindowKeeper.exe` so existing installs keep updating.
+pub fn asset_stem() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "windowkeeper-arm64"
+    } else {
+        "windowkeeper"
+    }
+}
+
+/// Pick the EXE asset and the checksum asset of a release for this build's
+/// architecture.
 pub fn select_assets(rel: &Release) -> (Option<Asset>, Option<Asset>) {
+    select_assets_for(rel, asset_stem())
+}
+
+/// Like [`select_assets`], for an explicit asset stem (`windowkeeper` or
+/// `windowkeeper-arm64`). Never falls back to another architecture's file.
+pub fn select_assets_for(rel: &Release, stem: &str) -> (Option<Asset>, Option<Asset>) {
     let find = |pred: &dyn Fn(&str) -> bool| {
         rel.assets
             .iter()
             .find(|a| pred(&a.name.to_lowercase()))
             .cloned()
     };
-    let exe = find(&|n| n == "windowkeeper.exe").or_else(|| find(&|n| n.ends_with(".exe")));
-    let sha = find(&|n| n == "windowkeeper.exe.sha256")
+    let exe_name = format!("{stem}.exe");
+    let sha_name = format!("{stem}.exe.sha256");
+    let is_arm = |n: &str| n.contains("arm64");
+    let want_arm = stem.contains("arm64");
+    // Fallback: any file of the right architecture (arm64 builds carry "arm64"
+    // in the name, x64 builds do not).
+    let right_arch = |n: &str| is_arm(n) == want_arm;
+    let exe = find(&|n| n == exe_name).or_else(|| find(&|n| n.ends_with(".exe") && right_arch(n)));
+    let sha = find(&|n| n == sha_name)
         .or_else(|| find(&|n| n == "sha256sums" || n == "sha256sums.txt"))
-        .or_else(|| find(&|n| n.ends_with(".sha256")));
+        .or_else(|| find(&|n| n.ends_with(".sha256") && right_arch(n)));
     (exe, sha)
 }
 
@@ -98,13 +122,18 @@ pub fn parse_sha256(text: &str, file_name: &str) -> Option<String> {
 
 /// Decide whether the release is an update for `current` and has all assets.
 pub fn evaluate(rel: &Release, current: &str) -> Result<Option<Update>, String> {
+    evaluate_for(rel, current, asset_stem())
+}
+
+/// [`evaluate`] for an explicit asset stem.
+pub fn evaluate_for(rel: &Release, current: &str, stem: &str) -> Result<Option<Update>, String> {
     if rel.draft || rel.prerelease || parse_tag(&rel.tag_name).is_none() {
         return Ok(None);
     }
     if !is_newer(current, &rel.tag_name) {
         return Ok(None);
     }
-    let (exe, sha) = select_assets(rel);
+    let (exe, sha) = select_assets_for(rel, stem);
     let exe = exe.ok_or("Das Release enthält keine EXE-Datei.")?;
     let sha = sha.ok_or("Das Release enthält keine SHA256-Prüfsumme – Update abgebrochen.")?;
     Ok(Some(Update {
@@ -317,19 +346,46 @@ mod tests {
     }
 
     #[test]
+    fn selects_asset_per_architecture() {
+        let r = release(
+            "v0.2.0",
+            &[
+                "WindowKeeper-arm64.exe",
+                "WindowKeeper-arm64.exe.sha256",
+                "WindowKeeper.exe",
+                "WindowKeeper.exe.sha256",
+            ],
+        );
+        let (e, s) = select_assets_for(&r, "windowkeeper");
+        assert_eq!(e.unwrap().name, "WindowKeeper.exe");
+        assert_eq!(s.unwrap().name, "WindowKeeper.exe.sha256");
+        let (e, s) = select_assets_for(&r, "windowkeeper-arm64");
+        assert_eq!(e.unwrap().name, "WindowKeeper-arm64.exe");
+        assert_eq!(s.unwrap().name, "WindowKeeper-arm64.exe.sha256");
+        // Old release without arm64 files: arm64 gets nothing, never the x64 EXE.
+        let old = release("v0.1.1", &["WindowKeeper.exe", "WindowKeeper.exe.sha256"]);
+        assert!(select_assets_for(&old, "windowkeeper-arm64").0.is_none());
+        // x64 never falls back to the arm64 file.
+        let arm_only = release("v0.2.0", &["WindowKeeper-arm64.exe"]);
+        assert!(select_assets_for(&arm_only, "windowkeeper").0.is_none());
+    }
+
+    #[test]
     fn evaluate_requires_hash_asset() {
         let r = release("v0.2.0", &["WindowKeeper.exe"]);
-        assert!(evaluate(&r, "0.1.0").is_err());
+        assert!(evaluate_for(&r, "0.1.0", "windowkeeper").is_err());
         let r = release("v0.2.0", &["WindowKeeper.exe", "WindowKeeper.exe.sha256"]);
-        let u = evaluate(&r, "0.1.0").unwrap().unwrap();
+        let u = evaluate_for(&r, "0.1.0", "windowkeeper").unwrap().unwrap();
         assert_eq!(u.version, "0.2.0");
         assert_eq!(u.sha.name, "WindowKeeper.exe.sha256");
-        assert!(evaluate(&r, "0.2.0").unwrap().is_none());
+        assert!(evaluate_for(&r, "0.2.0", "windowkeeper").unwrap().is_none());
         let mut d = r.clone();
         d.prerelease = true;
-        assert!(evaluate(&d, "0.1.0").unwrap().is_none());
+        assert!(evaluate_for(&d, "0.1.0", "windowkeeper").unwrap().is_none());
         let sums = release("0.3.0", &["WindowKeeper.exe", "SHA256SUMS"]);
-        assert!(evaluate(&sums, "0.1.0").unwrap().is_some());
+        assert!(evaluate_for(&sums, "0.1.0", "windowkeeper")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
