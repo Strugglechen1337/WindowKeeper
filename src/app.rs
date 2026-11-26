@@ -33,6 +33,7 @@ const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_WINEVENT: u32 = WM_APP + 2;
 const WM_APP_QUIT: u32 = WM_APP + 3;
 const WM_APP_UI: u32 = WM_APP + 4;
+const WM_APP_COMMAND: u32 = WM_APP + 5;
 
 const TIMER_SAVE: usize = 1;
 const TIMER_APPLY: usize = 2;
@@ -473,12 +474,29 @@ fn show_menu_inner(hwnd: HWND, anchor: Option<POINT>) {
         let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         if cmd.0 > 0 {
-            on_command(hwnd, cmd.0 as usize);
+            log_info!("Tray-Menü: Befehl {}", cmd.0);
+            on_command(hwnd, cmd.0 as usize, 0);
         }
     }
 }
 
-fn on_command(hwnd: HWND, id: usize) {
+/// Run a tray menu command. If the app state is momentarily borrowed (nested
+/// message loop), retry via the message queue instead of silently dropping it.
+fn on_command(hwnd: HWND, id: usize, tries: usize) {
+    if id != ID_OPEN && id != ID_UPDATE && id != ID_QUIT && with_app(|_| ()).is_none() {
+        if tries < 20 {
+            log_warn!(
+                "Tray-Befehl {id}: Zustand belegt, neuer Versuch {}",
+                tries + 1
+            );
+            unsafe {
+                let _ = PostMessageW(hwnd, WM_APP_COMMAND, WPARAM(id), LPARAM(tries as isize + 1));
+            }
+        } else {
+            log_error!("Tray-Befehl {id} verworfen: Zustand dauerhaft belegt");
+        }
+        return;
+    }
     match id {
         ID_OPEN => open_gui(),
         ID_SAVE => {
@@ -502,12 +520,27 @@ fn on_command(hwnd: HWND, id: usize) {
                 app.cfg.auto_save = !app.cfg.auto_save;
                 save_config(app);
                 log_info!("Automatisch speichern: {}", app.cfg.auto_save);
+                let text = if app.cfg.auto_save {
+                    "Automatisches Speichern ist jetzt an."
+                } else {
+                    "Automatisches Speichern ist jetzt aus."
+                };
+                balloon(app, text);
             });
         }
         ID_AUTOSTART => {
             with_app(|app| {
                 let want = !autostart::is_enabled();
-                if !set_autostart(app, want) {
+                if set_autostart(app, want) {
+                    balloon(
+                        app,
+                        if want {
+                            "Start mit Windows ist jetzt an."
+                        } else {
+                            "Start mit Windows ist jetzt aus."
+                        },
+                    );
+                } else {
                     balloon(app, "Autostart konnte nicht geändert werden.");
                 }
             });
@@ -1029,6 +1062,10 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                 TrayAction::OpenOverview => open_gui(),
                 TrayAction::Ignore => {}
             }
+            Some(LRESULT(0))
+        }
+        WM_APP_COMMAND => {
+            on_command(hwnd, wp.0, lp.0 as usize);
             Some(LRESULT(0))
         }
         WM_APP_UI => {
