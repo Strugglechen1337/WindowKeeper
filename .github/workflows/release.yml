@@ -9,8 +9,16 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: windows-latest
+            exe: WindowKeeper.exe
+          - runner: windows-11-arm
+            exe: WindowKeeper-arm64.exe
+    name: build ${{ matrix.exe }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,15 +29,33 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/windowkeeper.exe dist/WindowKeeper.exe
-          $hash = (Get-FileHash dist/WindowKeeper.exe -Algorithm SHA256).Hash.ToLower()
+          $exe = "${{ matrix.exe }}"
+          Copy-Item target/release/windowkeeper.exe "dist/$exe"
+          $hash = (Get-FileHash "dist/$exe" -Algorithm SHA256).Hash.ToLower()
           # Format "<hash>  <file>" (two spaces), no BOM
-          [System.IO.File]::WriteAllText("$PWD/dist/WindowKeeper.exe.sha256", "$hash  WindowKeeper.exe`n")
-          Get-Content dist/WindowKeeper.exe.sha256
+          [System.IO.File]::WriteAllText("$PWD/dist/$exe.sha256", "$hash  $exe`n")
+          Get-Content "dist/$exe.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.runner }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
       - name: create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/WindowKeeper.exe
             dist/WindowKeeper.exe.sha256
+            dist/WindowKeeper-arm64.exe
+            dist/WindowKeeper-arm64.exe.sha256
           generate_release_notes: true

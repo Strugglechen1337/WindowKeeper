@@ -6,7 +6,20 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            artifact: WindowKeeper
+            exe: WindowKeeper.exe
+          - arch: arm64
+            runner: windows-11-arm
+            artifact: WindowKeeper-arm64
+            exe: WindowKeeper-arm64.exe
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -25,10 +38,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/windowkeeper.exe dist/WindowKeeper.exe
+          Copy-Item target/release/windowkeeper.exe "dist/${{ matrix.exe }}"
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WindowKeeper
-          path: dist/WindowKeeper.exe
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.exe }}
           if-no-files-found: error
