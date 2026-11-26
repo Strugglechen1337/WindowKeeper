@@ -57,6 +57,7 @@ Dunkel und hell werden automatisch nach der Windows-Einstellung gewählt. *(Beis
 Das aktuelle Release ist **[WindowKeeper 0.1.1](https://github.com/Strugglechen1337/WindowKeeper/releases/tag/v0.1.1)**.
 
 1. [`WindowKeeper.exe`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.1/WindowKeeper.exe) herunterladen (zur Prüfung zusätzlich [`WindowKeeper.exe.sha256`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.1/WindowKeeper.exe.sha256)).
+   Auf **Windows on ARM** (z. B. Snapdragon X) stattdessen die native `WindowKeeper-arm64.exe` mit `WindowKeeper-arm64.exe.sha256` aus dem jeweiligen Release laden (ab Version 0.2.0).
 2. Die EXE in einen **beschreibbaren Ordner** legen (z. B. `C:\Tools\WindowKeeper\`).
 3. Starten und im **Infobereich der Taskleiste** nachsehen (ggf. hinter dem Pfeil „Ausgeblendete Symbole“). Beim ersten Start erscheint ein Hinweis.
 
