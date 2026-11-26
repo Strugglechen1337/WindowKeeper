@@ -60,7 +60,7 @@ Das aktuelle Release ist **[WindowKeeper 0.1.1](https://github.com/Strugglechen1
 2. Die EXE in einen **beschreibbaren Ordner** legen (z. B. `C:\Tools\WindowKeeper\`).
 3. Starten und im **Infobereich der Taskleiste** nachsehen (ggf. hinter dem Pfeil „Ausgeblendete Symbole“). Beim ersten Start erscheint ein Hinweis.
 
-SHA256 von `WindowKeeper.exe` in v0.1.1 steht in der Release-Datei [`WindowKeeper.exe.sha256`](https://github.com/Strugglechen1337/WindowKeeper/releases/download/v0.1.1/WindowKeeper.exe.sha256) (wird vom Release-Workflow auf windows-latest erzeugt).
+SHA256 von `WindowKeeper.exe` in v0.1.1: `ab3d54692894d9a4b0fcdc39e9e88efa4ec3e742ec127bc7bb5c8637dcc5f831`
 
 Neuere Versionen finden Sie unter [Releases](https://github.com/Strugglechen1337/WindowKeeper/releases). Entwicklungsstände ohne Release liegen weiterhin als Artefakt **`WindowKeeper`** auf dem Tab [Actions](https://github.com/Strugglechen1337/WindowKeeper/actions/workflows/ci.yml) (GitHub-Login nötig).
 
