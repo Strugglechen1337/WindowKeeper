@@ -20,7 +20,7 @@ use std::sync::Arc;
 const REPO_URL: &str = "https://github.com/Strugglechen1337/WindowKeeper";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Page {
+pub enum Page {
     Overview,
     Windows,
     Settings,
@@ -28,7 +28,7 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Overview, Page::Windows, Page::Settings, Page::Info];
+    pub const ALL: [Page; 4] = [Page::Overview, Page::Windows, Page::Settings, Page::Info];
 
     fn label(self) -> &'static str {
         match self {
@@ -68,6 +68,8 @@ pub struct View {
     notice_seen: u64,
     notice: Option<(String, f64)>,
     first_frame: bool,
+    /// Sample-data demo (documentation screenshots only).
+    demo: bool,
 }
 
 impl View {
@@ -106,7 +108,19 @@ impl View {
             notice_seen: 0,
             notice: None,
             first_frame: true,
+            demo: false,
         }
+    }
+
+    /// Mark the view as showing sample data (screenshots only).
+    #[cfg(not(windows))]
+    pub fn set_demo(&mut self, demo: bool) {
+        self.demo = demo;
+    }
+
+    #[cfg(not(windows))]
+    pub fn set_page(&mut self, page: Page) {
+        self.page = page;
     }
 
     fn send(&self, cmd: UiCommand) {
@@ -223,6 +237,13 @@ impl View {
                         .color(p.weak),
                 );
             });
+            if self.demo {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    pill(ui, p, "Beispieldaten");
+                });
+            }
         });
     }
 }

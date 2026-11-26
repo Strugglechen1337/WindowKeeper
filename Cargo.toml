@@ -16,6 +16,20 @@ sha2 = "0.10"
 toml = "0.8"
 ureq = { version = "2", features = ["json"] }
 
+# Optional: build the GUI on Linux/macOS to render the documentation
+# screenshots (`cargo run --example export_screenshots --features screenshots`).
+# Never needed on Windows (the entries below are always on there).
+eframe = { version = "0.37", optional = true, default-features = false, features = ["glow", "default_fonts", "x11"] }
+winit = { version = "0.30", optional = true, default-features = false }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[features]
+screenshots = ["dep:eframe", "dep:winit", "dep:image"]
+
+[[example]]
+name = "export_screenshots"
+required-features = ["screenshots"]
+
 [target.'cfg(windows)'.dependencies]
 # GUI: egui on the OpenGL (glow) backend. The `winit` entry only unifies the
 # version eframe uses; it is needed to run the event loop off the main thread.

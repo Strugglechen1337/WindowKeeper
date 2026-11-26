@@ -157,13 +157,23 @@ fn text_styles() -> BTreeMap<TextStyle, FontId> {
     ])
 }
 
-fn fonts_dir() -> PathBuf {
+#[cfg(windows)]
+fn read_font(file: &str) -> Option<Vec<u8>> {
     let win = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
-    PathBuf::from(win).join("Fonts")
+    std::fs::read(PathBuf::from(win).join("Fonts").join(file)).ok()
 }
 
+/// Screenshot demo on Linux: Source Sans Pro stands in for Segoe UI when it is
+/// installed; otherwise egui's built-in fonts are used.
+#[cfg(not(windows))]
 fn read_font(file: &str) -> Option<Vec<u8>> {
-    std::fs::read(fonts_dir().join(file)).ok()
+    let name = match file {
+        "segoeui.ttf" => "SourceSansPro-Regular.ttf",
+        "seguisb.ttf" => "SourceSansPro-Semibold.ttf",
+        _ => return None,
+    };
+    let dir = "/usr/share/fonts/truetype/sand-box/custom/Source Sans Pro";
+    std::fs::read(PathBuf::from(dir).join(name)).ok()
 }
 
 /// Load Segoe UI (+ Semibold, Symbol and the icon font) from the system.

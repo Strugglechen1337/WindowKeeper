@@ -19,7 +19,7 @@ pub mod version;
 
 #[cfg(windows)]
 pub mod app;
-#[cfg(windows)]
+#[cfg(any(windows, feature = "screenshots"))]
 pub mod gui;
 #[cfg(windows)]
 pub mod winapi;
