@@ -173,13 +173,11 @@ impl Bridge {
 // ----------------------------------------------------------- formatting ----
 
 /// Short sentence for the overview page.
-pub fn status_sentence(watching: bool, auto_save: bool) -> &'static str {
-    match (watching, auto_save) {
-        (true, _) => {
-            "WindowKeeper beobachtet spät startende Fenster und platziert sie automatisch."
-        }
-        (false, true) => "Bereit – Änderungen an Fenstern werden automatisch gespeichert.",
-        (false, false) => "Bereit – automatisches Speichern ist ausgeschaltet.",
+pub fn status_sentence(watching: bool) -> &'static str {
+    if watching {
+        "WindowKeeper beobachtet spät startende Fenster und platziert sie automatisch."
+    } else {
+        "Bereit – beim Start wird das zuletzt gespeicherte Layout wiederhergestellt."
     }
 }
 
@@ -362,9 +360,8 @@ mod tests {
 
     #[test]
     fn status_sentences() {
-        assert!(status_sentence(true, false).contains("beobachtet"));
-        assert!(status_sentence(false, true).contains("automatisch gespeichert"));
-        assert!(status_sentence(false, false).contains("ausgeschaltet"));
+        assert!(status_sentence(true).contains("beobachtet"));
+        assert!(status_sentence(false).contains("zuletzt gespeicherte"));
     }
 
     #[test]

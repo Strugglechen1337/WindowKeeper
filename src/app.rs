@@ -36,9 +36,7 @@ const WM_APP_QUIT: u32 = WM_APP + 3;
 const WM_APP_UI: u32 = WM_APP + 4;
 const WM_APP_COMMAND: u32 = WM_APP + 5;
 
-const TIMER_SAVE: usize = 1;
 const TIMER_APPLY: usize = 2;
-const TIMER_SCAN: usize = 3;
 const TIMER_UPDATE: usize = 4;
 const TIMER_WATCH_END: usize = 5;
 const TIMER_TRAY: usize = 6;
@@ -51,22 +49,16 @@ const VERIFY_DELAYS_MS: [u64; 4] = [1500, 3000, 6000, 12000];
 const ID_OPEN: usize = 1000;
 const ID_SAVE: usize = 1001;
 const ID_RESTORE: usize = 1002;
-const ID_AUTOSAVE: usize = 1003;
 const ID_AUTOSTART: usize = 1004;
 const ID_UPDATE: usize = 1005;
 const ID_QUIT: usize = 1006;
 
-const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 const EVENT_SYSTEM_MOVESIZEEND: u32 = 0x000B;
-const EVENT_SYSTEM_MINIMIZESTART: u32 = 0x0016;
-const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
 const EVENT_OBJECT_DESTROY: u32 = 0x8001;
 const EVENT_OBJECT_SHOW: u32 = 0x8002;
 const EVENT_OBJECT_HIDE: u32 = 0x8003;
-const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
-static LOC_PENDING: AtomicBool = AtomicBool::new(false);
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// True once the shell accepted NOTIFYICON_VERSION_4 for the tray icon.
 static TRAY_V4: AtomicBool = AtomicBool::new(false);
@@ -111,8 +103,6 @@ struct App {
     pending: HashMap<isize, (Instant, u32)>,
     /// Restored windows to re-check: due time, checks done, target placement.
     verify: HashMap<isize, (Instant, usize, Placement)>,
-    suppress_until: Instant,
-    save_armed: bool,
     hicon: HICON,
     hooks: Vec<HWINEVENTHOOK>,
     taskbar_created: u32,
@@ -250,7 +240,6 @@ pub fn run() {
         let hicon = create_icon();
         let first_run = !cfg.first_run_done;
         let watch_minutes = cfg.restore_watch_minutes;
-        let scan_ms = cfg.scan_interval_secs * 1000;
         let update_due = cfg.check_updates_on_start
             && updater::check_due(cfg.last_update_check, logger::now_secs());
         let app = App {
@@ -267,8 +256,6 @@ pub fn run() {
             handled: HashSet::new(),
             pending: HashMap::new(),
             verify: HashMap::new(),
-            suppress_until: Instant::now(),
-            save_armed: false,
             hicon,
             hooks: Vec::new(),
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
@@ -279,7 +266,6 @@ pub fn run() {
             app.last_saved = app.layout.to_json();
             tray_add(app);
             install_hooks(app);
-            SetTimer(app.hwnd, TIMER_SCAN, scan_ms, None);
             SetTimer(app.hwnd, TIMER_TRAY, 30_000, None);
             // Startup: restore, then keep watching for late windows.
             let n = restore(app, false);
@@ -422,12 +408,7 @@ fn show_menu(hwnd: HWND, anchor: Option<POINT>) {
 
 fn show_menu_inner(hwnd: HWND, anchor: Option<POINT>) {
     // Never fail silently: if the state is busy, still show the menu.
-    let (auto_save, auto_start) = with_app(|a| a.cfg.auto_save)
-        .map(|s| (s, autostart::is_enabled()))
-        .unwrap_or_else(|| {
-            log_warn!("Tray-Menü: Zustand belegt, zeige Menü mit Standardwerten");
-            (false, autostart::is_enabled())
-        });
+    let auto_start = autostart::is_enabled();
     unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             log_error!("Tray-Menü: CreatePopupMenu fehlgeschlagen");
@@ -447,11 +428,6 @@ fn show_menu_inner(hwnd: HWND, anchor: Option<POINT>) {
             "Layout jetzt wiederherstellen",
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        add(
-            ID_AUTOSAVE,
-            check(auto_save),
-            "Automatisch speichern an/aus",
-        );
         add(
             ID_AUTOSTART,
             check(auto_start),
@@ -510,7 +486,7 @@ fn on_command(hwnd: HWND, id: usize, tries: usize) {
         ID_OPEN => open_gui(),
         ID_SAVE => {
             with_app(|app| {
-                let n = snapshot(app, true);
+                let n = snapshot(app);
                 balloon(app, &format!("Layout gespeichert ({n} Fenster)."));
             });
         }
@@ -522,19 +498,6 @@ fn on_command(hwnd: HWND, id: usize, tries: usize) {
                 }
                 let n = restore(app, true);
                 balloon(app, &format!("{n} Fenster wiederhergestellt."));
-            });
-        }
-        ID_AUTOSAVE => {
-            with_app(|app| {
-                app.cfg.auto_save = !app.cfg.auto_save;
-                save_config(app);
-                log_info!("Automatisch speichern: {}", app.cfg.auto_save);
-                let text = if app.cfg.auto_save {
-                    "Automatisches Speichern ist jetzt an."
-                } else {
-                    "Automatisches Speichern ist jetzt aus."
-                };
-                balloon(app, text);
             });
         }
         ID_AUTOSTART => {
@@ -613,7 +576,7 @@ fn handle_ui_command(cmd: UiCommand) {
         }
         UiCommand::SaveLayout => {
             with_app(|app| {
-                let n = snapshot(app, true);
+                let n = snapshot(app);
                 b.notify(format!("Layout gespeichert ({n} Fenster)."));
             });
         }
@@ -651,20 +614,9 @@ fn handle_ui_command(cmd: UiCommand) {
         }
         UiCommand::SetSettings(edit) => {
             with_app(|app| {
-                let old_scan = app.cfg.scan_interval_secs;
                 if app.cfg.apply_settings(&edit) {
                     save_config(app);
                     log_info!("Einstellungen über die Oberfläche geändert");
-                }
-                if app.cfg.scan_interval_secs != old_scan {
-                    unsafe {
-                        SetTimer(
-                            app.hwnd,
-                            TIMER_SCAN,
-                            app.cfg.scan_interval_secs * 1000,
-                            None,
-                        );
-                    }
                 }
             });
         }
@@ -694,7 +646,6 @@ fn restore_entry(app: &mut App, id: &Identity) {
     if winapi::apply(hwnd, &placement, &mons) {
         schedule_verify(app, hwnd, placement);
         app.handled.insert(hwnd);
-        app.suppress_until = Instant::now() + Duration::from_millis(2500);
         mark_restored(app);
         b.notify(format!("Fenster von „{name}“ wiederhergestellt."));
     } else {
@@ -744,9 +695,6 @@ unsafe extern "system" fn win_event_proc(
     if GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CHILD.0 != 0 {
         return;
     }
-    if event == EVENT_OBJECT_LOCATIONCHANGE && LOC_PENDING.swap(true, Ordering::SeqCst) {
-        return;
-    }
     let main = MAIN_HWND.load(Ordering::SeqCst);
     if main != 0 {
         let _ = PostMessageW(
@@ -760,14 +708,10 @@ unsafe extern "system" fn win_event_proc(
 
 fn install_hooks(app: &mut App) {
     for ev in [
-        EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_MOVESIZEEND,
-        EVENT_SYSTEM_MINIMIZESTART,
-        EVENT_SYSTEM_MINIMIZEEND,
         EVENT_OBJECT_DESTROY,
         EVENT_OBJECT_SHOW,
         EVENT_OBJECT_HIDE,
-        EVENT_OBJECT_LOCATIONCHANGE,
     ] {
         let h = unsafe {
             SetWinEventHook(
@@ -800,14 +744,12 @@ fn on_win_event(app: &mut App, event: u32, id: isize) {
                     SetTimer(app.hwnd, TIMER_APPLY, 400, None);
                 }
             }
-            arm_save(app, false);
         }
         EVENT_SYSTEM_MOVESIZEEND => {
             // The user took over this window.
             app.handled.insert(id);
             app.pending.remove(&id);
             app.verify.remove(&id);
-            arm_save(app, true);
         }
         EVENT_OBJECT_DESTROY | EVENT_OBJECT_HIDE => {
             if event == EVENT_OBJECT_DESTROY {
@@ -816,25 +758,11 @@ fn on_win_event(app: &mut App, event: u32, id: isize) {
             app.pending.remove(&id);
             app.verify.remove(&id);
         }
-        _ => arm_save(app, false),
+        _ => {}
     }
 }
 
 // ------------------------------------------------------------ save/restore ----
-
-/// Schedule an automatic save. `restart` re-arms (debounce), otherwise an
-/// already pending save is kept (throttle).
-fn arm_save(app: &mut App, restart: bool) {
-    if !app.cfg.auto_save || Instant::now() < app.suppress_until {
-        return;
-    }
-    if restart || !app.save_armed {
-        app.save_armed = true;
-        unsafe {
-            SetTimer(app.hwnd, TIMER_SAVE, app.cfg.debounce_ms, None);
-        }
-    }
-}
 
 /// Write the layout if it changed. Returns true if the file was written.
 fn write_layout(app: &mut App) -> bool {
@@ -854,36 +782,19 @@ fn write_layout(app: &mut App) -> bool {
     }
 }
 
-/// Capture the current windows into the layout. Automatic runs skip windows
-/// that still wait for their restore so the saved positions are not clobbered.
+/// Capture the current windows into the saved layout (manual save only).
 /// Returns the number of captured windows.
-fn snapshot(app: &mut App, manual: bool) -> usize {
+fn snapshot(app: &mut App) -> usize {
     let mons = winapi::monitors();
     if mons.is_empty() {
         return 0;
     }
-    let mut live = winapi::enumerate(&mons);
-    if !manual {
-        // Windows still being re-checked after a restore must not overwrite
-        // the saved position with whatever the app moved them to.
-        live.retain(|l| !app.verify.contains_key(&l.hwnd));
-    }
-    let watching = app.watch_until.is_some_and(|t| Instant::now() < t);
-    if !manual && watching {
-        let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-        let matches = app.layout.restore_plan(&live_ids);
-        let mut keep = matches.iter();
-        live.retain(|l| {
-            let m = keep.next().copied().flatten();
-            m.is_none() || app.handled.contains(&l.hwnd)
-        });
-    }
+    let live = winapi::enumerate(&mons);
     let n = live.len();
     let entries: Vec<Entry> = live.into_iter().map(|l| l.entry).collect();
     app.layout.merge(entries);
-    if write_layout(app) || manual {
-        mark_saved(app);
-    }
+    write_layout(app);
+    mark_saved(app);
     publish(app, false);
     n
 }
@@ -908,7 +819,6 @@ fn restore(app: &mut App, manual: bool) -> usize {
             }
         }
     }
-    app.suppress_until = Instant::now() + Duration::from_millis(2500);
     if n > 0 {
         mark_restored(app);
     }
@@ -949,7 +859,6 @@ fn process_verify(app: &mut App) {
                         done + 1
                     );
                 }
-                app.suppress_until = now + Duration::from_millis(1500);
             }
             let next = done + 1;
             if let Some(delay) = VERIFY_DELAYS_MS.get(next) {
@@ -996,7 +905,6 @@ fn process_pending(app: &mut App) {
                         );
                     }
                     app.handled.insert(id);
-                    app.suppress_until = now + Duration::from_millis(1500);
                 }
                 None if found.is_some() && attempts < 3 => {
                     // Title/class may not be final yet; try again shortly.
@@ -1145,29 +1053,12 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         }
         WM_APP_WINEVENT => {
             let event = wp.0 as u32;
-            if event == EVENT_OBJECT_LOCATIONCHANGE {
-                LOC_PENDING.store(false, Ordering::SeqCst);
-            }
             with_app(|app| on_win_event(app, event, lp.0));
             Some(LRESULT(0))
         }
         WM_TIMER => {
             let id = wp.0;
             with_app(|app| match id {
-                TIMER_SAVE => {
-                    unsafe {
-                        let _ = KillTimer(app.hwnd, TIMER_SAVE);
-                    }
-                    app.save_armed = false;
-                    if app.cfg.auto_save && Instant::now() >= app.suppress_until {
-                        snapshot(app, false);
-                    }
-                }
-                TIMER_SCAN => {
-                    if app.cfg.auto_save && Instant::now() >= app.suppress_until {
-                        snapshot(app, false);
-                    }
-                }
                 TIMER_APPLY => process_pending(app),
                 TIMER_TRAY => tray_check(app),
                 TIMER_VERIFY => process_verify(app),
@@ -1190,11 +1081,6 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
             }
             Some(LRESULT(0))
         }
-        WM_DISPLAYCHANGE => {
-            // Windows rearranges windows when monitors change: do not save that.
-            with_app(|app| app.suppress_until = Instant::now() + Duration::from_secs(5));
-            Some(LRESULT(0))
-        }
         WM_APP_QUIT | WM_CLOSE => {
             unsafe {
                 let _ = DestroyWindow(hwnd);
@@ -1202,17 +1088,12 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
             Some(LRESULT(0))
         }
         WM_DESTROY => {
-            with_app(|app| {
-                if app.cfg.auto_save {
-                    snapshot(app, false);
+            with_app(|app| unsafe {
+                for h in app.hooks.drain(..) {
+                    let _ = UnhookWinEvent(h);
                 }
-                unsafe {
-                    for h in app.hooks.drain(..) {
-                        let _ = UnhookWinEvent(h);
-                    }
-                    let _ = Shell_NotifyIconW(NIM_DELETE, &nid(app));
-                    let _ = DestroyIcon(app.hicon);
-                }
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid(app));
+                let _ = DestroyIcon(app.hicon);
             });
             unsafe { PostQuitMessage(0) };
             Some(LRESULT(0))

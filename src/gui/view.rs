@@ -2,7 +2,7 @@
 
 use super::icons::Icons;
 use super::theme::{self, palette, Palette};
-use crate::config::{SettingsEdit, DEBOUNCE_MS, SCAN_INTERVAL_SECS, WATCH_MINUTES_MAX};
+use crate::config::{SettingsEdit, WATCH_MINUTES_MAX};
 use crate::icon;
 use crate::layout::Entry;
 use crate::matching::Identity;
@@ -405,11 +405,7 @@ impl View {
                             ui.label(semibold("WindowKeeper läuft", 18.0));
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(status_sentence(
-                                        s.watching,
-                                        s.settings.auto_save,
-                                    ))
-                                    .color(p.weak),
+                                    RichText::new(status_sentence(s.watching)).color(p.weak),
                                 )
                                 .wrap(),
                             );
@@ -422,11 +418,6 @@ impl View {
                 let tiles = [
                     ("Gemerkte Fenster", s.entries.len().to_string(), p.text),
                     ("Ignoriert", s.ignored_count().to_string(), p.text),
-                    (
-                        "Automatisch speichern",
-                        on_off(s.settings.auto_save).into(),
-                        if s.settings.auto_save { p.ok } else { p.weak },
-                    ),
                     (
                         "Mit Windows starten",
                         on_off(s.autostart).into(),
@@ -712,16 +703,6 @@ impl View {
                     setting_row(
                         ui,
                         p,
-                        "Automatisch speichern",
-                        "Fensterpositionen werden gespeichert, sobald sie sich ändern.",
-                        |ui| {
-                            toggle(ui, p, &mut self.edit.auto_save);
-                        },
-                    );
-                    separator(ui);
-                    setting_row(
-                        ui,
-                        p,
                         "Beim Start nach Updates suchen",
                         "Höchstens einmal pro Tag. Installiert wird nur nach Rückfrage.",
                         |ui| {
@@ -731,36 +712,6 @@ impl View {
                 });
                 ui.add_space(4.0);
                 card(ui, p, p.card, |ui| {
-                    setting_row(
-                        ui,
-                        p,
-                        "Verzögerung vor dem Speichern",
-                        "Wartezeit nach einer Änderung, bevor automatisch gespeichert wird.",
-                        |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut self.edit.debounce_ms)
-                                    .range(DEBOUNCE_MS)
-                                    .speed(50)
-                                    .suffix(" ms"),
-                            );
-                        },
-                    );
-                    separator(ui);
-                    setting_row(
-                        ui,
-                        p,
-                        "Prüfintervall im Hintergrund",
-                        "Zusätzlicher, vorsichtiger Scan als Sicherheitsnetz.",
-                        |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut self.edit.scan_interval_secs)
-                                    .range(SCAN_INTERVAL_SECS)
-                                    .speed(1)
-                                    .suffix(" s"),
-                            );
-                        },
-                    );
-                    separator(ui);
                     setting_row(
                         ui,
                         p,
