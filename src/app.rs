@@ -1,6 +1,7 @@
 //! Tray application: hidden message window, WinEvent hooks, timers, menu.
 
 use crate::config::Config;
+use crate::geometry::Placement;
 use crate::layout::{Entry, Layout};
 use crate::matching::Identity;
 use crate::state::RunState;
@@ -41,6 +42,11 @@ const TIMER_SCAN: usize = 3;
 const TIMER_UPDATE: usize = 4;
 const TIMER_WATCH_END: usize = 5;
 const TIMER_TRAY: usize = 6;
+const TIMER_VERIFY: usize = 7;
+
+/// Re-check delays (ms) after a restore: apps like Teams, Outlook or Edge
+/// often move their window again after it appeared.
+const VERIFY_DELAYS_MS: [u64; 4] = [1500, 3000, 6000, 12000];
 
 const ID_OPEN: usize = 1000;
 const ID_SAVE: usize = 1001;
@@ -103,6 +109,8 @@ struct App {
     watch_until: Option<Instant>,
     handled: HashSet<isize>,
     pending: HashMap<isize, (Instant, u32)>,
+    /// Restored windows to re-check: due time, checks done, target placement.
+    verify: HashMap<isize, (Instant, usize, Placement)>,
     suppress_until: Instant,
     save_armed: bool,
     hicon: HICON,
@@ -258,6 +266,7 @@ pub fn run() {
             watch_until: None,
             handled: HashSet::new(),
             pending: HashMap::new(),
+            verify: HashMap::new(),
             suppress_until: Instant::now(),
             save_armed: false,
             hicon,
@@ -681,7 +690,9 @@ fn restore_entry(app: &mut App, id: &Identity) {
         return;
     };
     let hwnd = live[li].hwnd;
-    if winapi::apply(hwnd, &app.layout.windows[idx].placement, &mons) {
+    let placement = app.layout.windows[idx].placement.clone();
+    if winapi::apply(hwnd, &placement, &mons) {
+        schedule_verify(app, hwnd, placement);
         app.handled.insert(hwnd);
         app.suppress_until = Instant::now() + Duration::from_millis(2500);
         mark_restored(app);
@@ -795,6 +806,7 @@ fn on_win_event(app: &mut App, event: u32, id: isize) {
             // The user took over this window.
             app.handled.insert(id);
             app.pending.remove(&id);
+            app.verify.remove(&id);
             arm_save(app, true);
         }
         EVENT_OBJECT_DESTROY | EVENT_OBJECT_HIDE => {
@@ -802,6 +814,7 @@ fn on_win_event(app: &mut App, event: u32, id: isize) {
                 app.handled.remove(&id);
             }
             app.pending.remove(&id);
+            app.verify.remove(&id);
         }
         _ => arm_save(app, false),
     }
@@ -850,6 +863,11 @@ fn snapshot(app: &mut App, manual: bool) -> usize {
         return 0;
     }
     let mut live = winapi::enumerate(&mons);
+    if !manual {
+        // Windows still being re-checked after a restore must not overwrite
+        // the saved position with whatever the app moved them to.
+        live.retain(|l| !app.verify.contains_key(&l.hwnd));
+    }
     let watching = app.watch_until.is_some_and(|t| Instant::now() < t);
     if !manual && watching {
         let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
@@ -883,8 +901,10 @@ fn restore(app: &mut App, manual: bool) -> usize {
     for (l, m) in live.iter().zip(&matches) {
         app.handled.insert(l.hwnd);
         if let Some(si) = m {
-            if winapi::apply(l.hwnd, &app.layout.windows[*si].placement, &mons) {
+            let placement = app.layout.windows[*si].placement.clone();
+            if winapi::apply(l.hwnd, &placement, &mons) {
                 n += 1;
+                schedule_verify(app, l.hwnd, placement);
             }
         }
     }
@@ -897,6 +917,53 @@ fn restore(app: &mut App, manual: bool) -> usize {
     }
     publish(app, false);
     n
+}
+
+/// Re-check a restored window a few times and re-apply if the app moved it.
+fn schedule_verify(app: &mut App, hwnd: isize, placement: Placement) {
+    let due = Instant::now() + Duration::from_millis(VERIFY_DELAYS_MS[0]);
+    app.verify.insert(hwnd, (due, 0, placement));
+    unsafe {
+        SetTimer(app.hwnd, TIMER_VERIFY, 500, None);
+    }
+}
+
+fn process_verify(app: &mut App) {
+    let now = Instant::now();
+    let due: Vec<isize> = app
+        .verify
+        .iter()
+        .filter(|(_, (t, _, _))| *t <= now)
+        .map(|(k, _)| *k)
+        .collect();
+    if !due.is_empty() {
+        let mons = winapi::monitors();
+        for id in due {
+            let Some((_, done, placement)) = app.verify.remove(&id) else {
+                continue;
+            };
+            if !winapi::is_applied(id, &placement, &mons) {
+                if winapi::apply(id, &placement, &mons) {
+                    log_info!(
+                        "Fenster nach dem Start erneut positioniert (Versuch {})",
+                        done + 1
+                    );
+                }
+                app.suppress_until = now + Duration::from_millis(1500);
+            }
+            let next = done + 1;
+            if let Some(delay) = VERIFY_DELAYS_MS.get(next) {
+                let wait = delay - VERIFY_DELAYS_MS[next - 1];
+                app.verify
+                    .insert(id, (now + Duration::from_millis(wait), next, placement));
+            }
+        }
+    }
+    if app.verify.is_empty() {
+        unsafe {
+            let _ = KillTimer(app.hwnd, TIMER_VERIFY);
+        }
+    }
 }
 
 /// Restore windows that appeared recently.
@@ -919,7 +986,9 @@ fn process_pending(app: &mut App) {
             let found = live.iter().position(|l| l.hwnd == id);
             match found.and_then(|i| matches[i]) {
                 Some(si) => {
-                    if winapi::apply(id, &app.layout.windows[si].placement, &mons) {
+                    let placement = app.layout.windows[si].placement.clone();
+                    if winapi::apply(id, &placement, &mons) {
+                        schedule_verify(app, id, placement);
                         restored_any = true;
                         log_info!(
                             "Spätes Fenster wiederhergestellt: {}",
@@ -1101,6 +1170,7 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                 }
                 TIMER_APPLY => process_pending(app),
                 TIMER_TRAY => tray_check(app),
+                TIMER_VERIFY => process_verify(app),
                 TIMER_WATCH_END => {
                     unsafe {
                         let _ = KillTimer(app.hwnd, TIMER_WATCH_END);
