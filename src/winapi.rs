@@ -324,6 +324,36 @@ fn set_placement(hwnd: HWND, rect: &Rect, off: (i32, i32), cmd: i32, flags: u32)
     unsafe { SetWindowPlacement(hwnd, &wp).is_ok() }
 }
 
+/// True if the window already is where `p` would put it.
+pub fn is_applied(id: isize, p: &Placement, mons: &[MonitorDesc]) -> bool {
+    let Some(res) = resolve(p, mons) else {
+        return true;
+    };
+    let hwnd = hwnd_from(id);
+    unsafe {
+        match p.state {
+            ShowState::Normal => {
+                if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() {
+                    return false;
+                }
+                let mut cur = RECT::default();
+                GetWindowRect(hwnd, &mut cur).is_ok() && to_rect(&cur) == res.rect
+            }
+            ShowState::Maximized => {
+                if !IsZoomed(hwnd).as_bool() {
+                    return false;
+                }
+                let mut cur = RECT::default();
+                GetWindowRect(hwnd, &mut cur).is_ok()
+                    && monitor_for_rect(&to_rect(&cur), mons)
+                        .zip(monitor_for_rect(&res.rect, mons))
+                        .is_some_and(|(a, b)| a.gdi_name == b.gdi_name)
+            }
+            ShowState::Minimized => IsIconic(hwnd).as_bool(),
+        }
+    }
+}
+
 /// Apply a saved placement to a window. Returns true if the window was
 /// touched successfully (or already in place).
 pub fn apply(id: isize, p: &Placement, mons: &[MonitorDesc]) -> bool {
