@@ -852,13 +852,11 @@ fn process_verify(app: &mut App) {
             let Some((_, done, placement)) = app.verify.remove(&id) else {
                 continue;
             };
-            if !winapi::is_applied(id, &placement, &mons) {
-                if winapi::apply(id, &placement, &mons) {
-                    log_info!(
-                        "Fenster nach dem Start erneut positioniert (Versuch {})",
-                        done + 1
-                    );
-                }
+            if !winapi::is_applied(id, &placement, &mons) && winapi::apply(id, &placement, &mons) {
+                log_info!(
+                    "Fenster nach dem Start erneut positioniert (Versuch {})",
+                    done + 1
+                );
             }
             let next = done + 1;
             if let Some(delay) = VERIFY_DELAYS_MS.get(next) {
