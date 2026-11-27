@@ -43,8 +43,8 @@ Dunkel und hell werden automatisch nach der Windows-Einstellung gewählt. *(Beis
 
 - **Portabel:** eine einzelne `WindowKeeper.exe`, Daten im Ordner `data/` daneben.
 - **Tray-App mit Autostart** (optional, per Schalter; schreibt nur `HKCU\...\Run`).
-- **Automatisch speichern** (Standard: an): Das Layout wird gespeichert, sobald ein Fenster verschoben/skaliert wird oder sich sein Zustand ändert (WinEvent-Hooks, entprellt, plus ein vorsichtiger Hintergrund-Scan).
-- **Automatisch wiederherstellen** beim Start/Login. **Späte Fenster**, die erst nach einigen Minuten erscheinen (Standard: 5), werden ebenfalls platziert.
+- **Layout bewusst speichern:** Du legst mit *Layout jetzt speichern* fest, welcher Stand gilt. Es gibt kein automatisches Speichern, das einen guten Stand überschreiben könnte.
+- **Automatisch wiederherstellen** beim Start/Login mit dem zuletzt gespeicherten Layout. **Späte Fenster**, die erst nach einigen Minuten erscheinen (Standard: 10), werden ebenfalls platziert, und Apps, die ihr Fenster danach selbst wieder verschieben, werden mehrfach nachgeführt.
 - Fenster werden über *Pfad der EXE + Fensterklasse* erkannt, bei generischen Klassen oder mehrdeutigen Treffern zusätzlich über den Titel.
 - **Multi-Monitor und Per-Monitor-DPI v2.** Fehlt der gespeicherte Monitor (z. B. Display abgesteckt), landet das Fenster vollständig sichtbar im Arbeitsbereich des Hauptmonitors.
 - **Übersicht (GUI)** auf Deutsch im Windows-11-Stil, hell/dunkel automatisch.
@@ -74,9 +74,9 @@ Die EXE ist nicht code-signiert; Windows SmartScreen kann deshalb beim ersten St
 - **Übersicht:** Status, Zeitpunkt der letzten Speicherung/Wiederherstellung, Anzahl gemerkter und ignorierter Fenster, Schaltflächen *Layout speichern* / *Layout wiederherstellen*.
 - **Fenster:** Liste aller gemerkten Fenster (Programmsymbol, Datei, Titel, Position/Größe, Monitor, Zustand) mit Suche. Pro Eintrag:
   - **Jetzt wiederherstellen** setzt nur dieses Fenster zurück (läuft das Programm nicht, erscheint ein Hinweis – es wird nichts gestartet).
-  - **Ignorieren** lässt den Eintrag in der Liste (abgeblendet), aber er wird beim automatischen Wiederherstellen, bei *Layout wiederherstellen* und beim automatischen Speichern übersprungen bzw. nicht verändert.
+  - **Ignorieren** lässt den Eintrag in der Liste (abgeblendet), aber er wird beim automatischen Wiederherstellen, bei *Layout wiederherstellen* und beim Speichern übersprungen bzw. nicht verändert.
   - **Löschen** entfernt den Eintrag nach Rückfrage. Ist das Fenster noch geöffnet, wird es beim nächsten Speichern erneut gemerkt – zum dauerhaften Ausschließen *Ignorieren* nutzen.
-- **Einstellungen:** Autostart, automatisches Speichern, Verzögerung/Prüfintervall, Beobachtung später Fenster, Update-Prüfung beim Start. Änderungen werden sofort in `data/config.toml` gespeichert.
+- **Einstellungen:** Autostart, Beobachtung später Fenster, Update-Prüfung beim Start. Änderungen werden sofort in `data/config.toml` gespeichert.
 - **Info:** Version, GitHub-Link, Lizenz und *Nach Updates suchen* (Installation nur nach Rückfrage, SHA256-Prüfung Pflicht).
 
 ### Tray-Menü
@@ -84,9 +84,8 @@ Die EXE ist nicht code-signiert; Windows SmartScreen kann deshalb beim ersten St
 | Eintrag | Wirkung |
 | --- | --- |
 | Übersicht öffnen | Öffnet die Oberfläche (auch per Linksklick auf das Symbol) |
-| Layout jetzt speichern | Speichert alle aktuellen Fensterpositionen sofort |
+| Layout jetzt speichern | Speichert alle aktuellen Fensterpositionen; dieser Stand wird beim Start wiederhergestellt |
 | Layout jetzt wiederherstellen | Setzt gespeicherte Positionen sofort um |
-| Automatisch speichern an/aus | Schaltet das automatische Speichern um (wird gespeichert) |
 | Mit Windows starten an/aus | Setzt/entfernt den Autostart-Eintrag |
 | Nach Updates suchen | Prüft sofort auf eine neue Version |
 | Beenden | Beendet WindowKeeper |
@@ -109,10 +108,7 @@ Nichts wird unter `%APPDATA%` abgelegt. Ist der EXE-Ordner nicht beschreibbar, w
 ### Einstellungen (`data/config.toml`)
 
 ```toml
-auto_save = true              # automatisch speichern
-restore_watch_minutes = 5     # so lange werden spät erscheinende Fenster platziert (0 = aus)
-debounce_ms = 1500            # Entprellung des automatischen Speicherns
-scan_interval_secs = 30       # Intervall des Hintergrund-Scans
+restore_watch_minutes = 10    # so lange werden spät erscheinende Fenster platziert (0 = aus)
 check_updates_on_start = true # beim Start höchstens einmal täglich nach Updates suchen
 last_update_check = 0         # wird automatisch gepflegt
 first_run_done = false        # wird automatisch gepflegt
@@ -137,7 +133,7 @@ first_run_done = false        # wird automatisch gepflegt
 - **UWP-Apps** und manche andere Programme positionieren sich nach dem Start selbst und ignorieren die Wiederherstellung.
 - **Programme werden nicht gestartet.** Läuft ein gemerktes Programm nicht, passiert nichts (ein automatisches Starten ist bewusst nicht implementiert).
 - **Ignorieren oder Löschen?** *Ignorieren* schließt ein Fenster dauerhaft von Speichern und Wiederherstellen aus. *Löschen* entfernt nur den Eintrag; ein noch offenes Fenster wird beim nächsten Speichern wieder aufgenommen.
-- Es gibt ein Layout pro Rechner-Konfiguration. Wird ein Monitor abgesteckt und Windows verschiebt Fenster, kann das beim automatischen Speichern übernommen werden – bei Bedarf Auto-Speichern kurz ausschalten.
+- Es gibt ein Layout pro Rechner-Konfiguration. Gespeichert wird nur auf Wunsch, ein Verschieben durch Windows (z. B. nach dem Abstecken eines Monitors) ändert das gespeicherte Layout also nicht.
 
 ## Aus dem Quellcode bauen
 

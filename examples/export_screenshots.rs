@@ -97,10 +97,7 @@ fn demo_bridge() -> Arc<Bridge> {
     let bridge = Bridge::new(|| {});
     bridge.update(|s| {
         s.settings = SettingsEdit {
-            auto_save: true,
-            restore_watch_minutes: 5,
-            debounce_ms: 1500,
-            scan_interval_secs: 30,
+            restore_watch_minutes: 10,
             check_updates_on_start: true,
         };
         s.autostart = true;
