@@ -53,7 +53,7 @@ fn similarity(a: &str, b: &str) -> usize {
     prefix + suffix.min(a.len().min(b.len()) - prefix)
 }
 
-fn same_group(a: &Identity, b: &Identity) -> bool {
+pub fn same_group(a: &Identity, b: &Identity) -> bool {
     norm_path(&a.exe_path) == norm_path(&b.exe_path)
         && a.class_name.eq_ignore_ascii_case(&b.class_name)
 }

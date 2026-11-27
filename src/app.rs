@@ -55,6 +55,7 @@ const ID_AUTOSAVE: usize = 1003;
 const ID_AUTOSTART: usize = 1004;
 const ID_UPDATE: usize = 1005;
 const ID_QUIT: usize = 1006;
+const ID_UNPIN: usize = 1007;
 
 const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 const EVENT_SYSTEM_MOVESIZEEND: u32 = 0x000B;
@@ -103,6 +104,11 @@ struct App {
     cfg_path: PathBuf,
     layout: Layout,
     layout_path: PathBuf,
+    /// Automatically saved layout; only used as fallback while a fixed
+    /// (manually saved) layout exists.
+    auto: Layout,
+    auto_path: PathBuf,
+    auto_saved: String,
     state: RunState,
     state_path: PathBuf,
     last_saved: String,
@@ -198,6 +204,8 @@ pub fn run() {
         let _ = cfg.save(&cfg_path);
     }
     let layout_path = data_dir.join("layout.json");
+    let auto_path = data_dir.join("layout.auto.json");
+    let auto = Layout::load(&auto_path).unwrap_or_default();
     let state_path = data_dir.join("state.json");
     let state = RunState::load(&state_path);
     let layout = match Layout::load(&layout_path) {
@@ -260,6 +268,9 @@ pub fn run() {
             cfg_path,
             layout,
             layout_path,
+            auto,
+            auto_path,
+            auto_saved: String::new(),
             state,
             state_path,
             last_saved: String::new(),
@@ -422,11 +433,11 @@ fn show_menu(hwnd: HWND, anchor: Option<POINT>) {
 
 fn show_menu_inner(hwnd: HWND, anchor: Option<POINT>) {
     // Never fail silently: if the state is busy, still show the menu.
-    let (auto_save, auto_start) = with_app(|a| a.cfg.auto_save)
-        .map(|s| (s, autostart::is_enabled()))
+    let (auto_save, pinned, auto_start) = with_app(|a| (a.cfg.auto_save, a.state.pinned))
+        .map(|(s, p)| (s, p, autostart::is_enabled()))
         .unwrap_or_else(|| {
             log_warn!("Tray-Menü: Zustand belegt, zeige Menü mit Standardwerten");
-            (false, autostart::is_enabled())
+            (false, false, autostart::is_enabled())
         });
     unsafe {
         let Ok(menu) = CreatePopupMenu() else {
@@ -446,6 +457,9 @@ fn show_menu_inner(hwnd: HWND, anchor: Option<POINT>) {
             MENU_ITEM_FLAGS(0),
             "Layout jetzt wiederherstellen",
         );
+        if pinned {
+            add(ID_UNPIN, MENU_ITEM_FLAGS(0), "Festes Layout aufheben");
+        }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         add(
             ID_AUTOSAVE,
@@ -511,17 +525,28 @@ fn on_command(hwnd: HWND, id: usize, tries: usize) {
         ID_SAVE => {
             with_app(|app| {
                 let n = snapshot(app, true);
-                balloon(app, &format!("Layout gespeichert ({n} Fenster)."));
+                balloon(app, &format!("Festes Layout gespeichert ({n} Fenster)."));
             });
         }
         ID_RESTORE => {
             with_app(|app| {
-                if app.layout.is_empty() {
+                if restore_layout(app).is_empty() {
                     balloon(app, "Es ist noch kein Layout gespeichert.");
                     return;
                 }
                 let n = restore(app, true);
                 balloon(app, &format!("{n} Fenster wiederhergestellt."));
+            });
+        }
+        ID_UNPIN => {
+            with_app(|app| {
+                app.state.pinned = false;
+                save_state(app);
+                log_info!("Festes Layout aufgehoben");
+                balloon(
+                    app,
+                    "Festes Layout aufgehoben. Automatisches Speichern aktualisiert das Layout wieder.",
+                );
             });
         }
         ID_AUTOSAVE => {
@@ -614,7 +639,7 @@ fn handle_ui_command(cmd: UiCommand) {
         UiCommand::SaveLayout => {
             with_app(|app| {
                 let n = snapshot(app, true);
-                b.notify(format!("Layout gespeichert ({n} Fenster)."));
+                b.notify(format!("Festes Layout gespeichert ({n} Fenster)."));
             });
         }
         UiCommand::RestoreAll => {
@@ -854,6 +879,29 @@ fn write_layout(app: &mut App) -> bool {
     }
 }
 
+/// Write the automatic fallback layout if it changed.
+fn write_auto(app: &mut App) {
+    let json = app.auto.to_json();
+    if json == app.auto_saved {
+        return;
+    }
+    match app.auto.save(&app.auto_path) {
+        Ok(()) => app.auto_saved = json,
+        Err(e) => log_error!("layout.auto.json konnte nicht gespeichert werden: {e}"),
+    }
+}
+
+/// The layout used for restoring: the fixed (manually saved) layout plus the
+/// automatic one for applications the fixed layout does not know. Without a
+/// fixed layout this is simply the saved layout.
+fn restore_layout(app: &App) -> Layout {
+    if app.state.pinned {
+        app.layout.with_fallback(&app.auto)
+    } else {
+        app.layout.clone()
+    }
+}
+
 /// Capture the current windows into the layout. Automatic runs skip windows
 /// that still wait for their restore so the saved positions are not clobbered.
 /// Returns the number of captured windows.
@@ -871,7 +919,7 @@ fn snapshot(app: &mut App, manual: bool) -> usize {
     let watching = app.watch_until.is_some_and(|t| Instant::now() < t);
     if !manual && watching {
         let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-        let matches = app.layout.restore_plan(&live_ids);
+        let matches = restore_layout(app).restore_plan(&live_ids);
         let mut keep = matches.iter();
         live.retain(|l| {
             let m = keep.next().copied().flatten();
@@ -880,9 +928,21 @@ fn snapshot(app: &mut App, manual: bool) -> usize {
     }
     let n = live.len();
     let entries: Vec<Entry> = live.into_iter().map(|l| l.entry).collect();
-    app.layout.merge(entries);
-    if write_layout(app) || manual {
+    if manual {
+        // A manual save defines the fixed layout.
+        app.layout.merge(entries);
+        app.state.pinned = true;
+        write_layout(app);
         mark_saved(app);
+    } else if app.state.pinned {
+        // Fixed layout exists: automatic saves only feed the fallback layout.
+        app.auto.merge(entries);
+        write_auto(app);
+    } else {
+        app.layout.merge(entries);
+        if write_layout(app) {
+            mark_saved(app);
+        }
     }
     publish(app, false);
     n
@@ -891,17 +951,18 @@ fn snapshot(app: &mut App, manual: bool) -> usize {
 /// Apply the saved layout to all matching windows. Returns how many were applied.
 fn restore(app: &mut App, manual: bool) -> usize {
     let mons = winapi::monitors();
-    if mons.is_empty() || app.layout.is_empty() {
+    let eff = restore_layout(app);
+    if mons.is_empty() || eff.is_empty() {
         return 0;
     }
     let live = winapi::enumerate(&mons);
     let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-    let matches = app.layout.restore_plan(&live_ids);
+    let matches = eff.restore_plan(&live_ids);
     let mut n = 0;
     for (l, m) in live.iter().zip(&matches) {
         app.handled.insert(l.hwnd);
         if let Some(si) = m {
-            let placement = app.layout.windows[*si].placement.clone();
+            let placement = eff.windows[*si].placement.clone();
             if winapi::apply(l.hwnd, &placement, &mons) {
                 n += 1;
                 schedule_verify(app, l.hwnd, placement);
@@ -979,20 +1040,21 @@ fn process_pending(app: &mut App) {
         let mons = winapi::monitors();
         let live = winapi::enumerate(&mons);
         let live_ids: Vec<_> = live.iter().map(|l| l.entry.identity.clone()).collect();
-        let matches = app.layout.restore_plan(&live_ids);
+        let eff = restore_layout(app);
+        let matches = eff.restore_plan(&live_ids);
         let mut restored_any = false;
         for id in due {
             let (_, attempts) = app.pending.remove(&id).unwrap_or((now, 0));
             let found = live.iter().position(|l| l.hwnd == id);
             match found.and_then(|i| matches[i]) {
                 Some(si) => {
-                    let placement = app.layout.windows[si].placement.clone();
+                    let placement = eff.windows[si].placement.clone();
                     if winapi::apply(id, &placement, &mons) {
                         schedule_verify(app, id, placement);
                         restored_any = true;
                         log_info!(
                             "Spätes Fenster wiederhergestellt: {}",
-                            app.layout.windows[si].identity.title
+                            eff.windows[si].identity.title
                         );
                     }
                     app.handled.insert(id);

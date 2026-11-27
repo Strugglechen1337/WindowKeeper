@@ -12,6 +12,9 @@ pub struct RunState {
     pub last_save_at: u64,
     /// Unix seconds of the last restore (0 = never).
     pub last_restore_at: u64,
+    /// True once the user saved manually: that layout is then the fixed
+    /// restore source and automatic saves go to a separate fallback layout.
+    pub pinned: bool,
 }
 
 impl RunState {
@@ -42,6 +45,7 @@ mod tests {
         let s = RunState {
             last_save_at: 5,
             last_restore_at: 9,
+            pinned: true,
         };
         s.save(&p).unwrap();
         assert_eq!(RunState::load(&p), s);

@@ -84,14 +84,19 @@ Die EXE ist nicht code-signiert; Windows SmartScreen kann deshalb beim ersten St
 | Eintrag | Wirkung |
 | --- | --- |
 | Übersicht öffnen | Öffnet die Oberfläche (auch per Linksklick auf das Symbol) |
-| Layout jetzt speichern | Speichert alle aktuellen Fensterpositionen sofort |
+| Layout jetzt speichern | Speichert alle aktuellen Fensterpositionen sofort und macht sie zum **festen Layout** |
 | Layout jetzt wiederherstellen | Setzt gespeicherte Positionen sofort um |
+| Festes Layout aufheben | Erscheint nur, wenn ein festes Layout besteht; danach aktualisiert das automatische Speichern das Layout wieder |
 | Automatisch speichern an/aus | Schaltet das automatische Speichern um (wird gespeichert) |
 | Mit Windows starten an/aus | Setzt/entfernt den Autostart-Eintrag |
 | Nach Updates suchen | Prüft sofort auf eine neue Version |
 | Beenden | Beendet WindowKeeper |
 
 Ist noch kein Layout gespeichert, passiert beim Wiederherstellen nichts (es erscheint nur ein kurzer Hinweis).
+
+### Festes Layout und automatisches Speichern
+
+Solange du nie manuell gespeichert hast, aktualisiert das automatische Speichern das Layout laufend. Sobald du **Layout jetzt speichern** wählst, wird dieser Stand zum **festen Layout**: Wiederherstellen (manuell, beim Start und für spät erscheinende Fenster) nutzt es, und das automatische Speichern ändert es nicht mehr. Das automatische Speichern läuft weiter und schreibt in `data/layout.auto.json`; daraus werden nur Anwendungen wiederhergestellt, die das feste Layout gar nicht kennt. Mit **Festes Layout aufheben** kehrst du zum früheren Verhalten zurück.
 
 ## Portabel: der Ordner `data/`
 

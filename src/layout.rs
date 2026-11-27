@@ -1,7 +1,7 @@
 //! Persisted layout: saved window placements and the merge logic.
 
 use crate::geometry::Placement;
-use crate::matching::{match_windows, Identity};
+use crate::matching::{match_windows, same_group, Identity};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
@@ -48,6 +48,22 @@ impl Layout {
 
     pub fn ignored_count(&self) -> usize {
         self.windows.iter().filter(|e| e.ignored).count()
+    }
+
+    /// The fixed layout plus entries from `auto` for applications (exe + class)
+    /// the fixed layout does not know at all. The fixed layout always wins.
+    pub fn with_fallback(&self, auto: &Layout) -> Layout {
+        let mut out = self.clone();
+        for e in &auto.windows {
+            if !self
+                .windows
+                .iter()
+                .any(|f| same_group(&f.identity, &e.identity))
+            {
+                out.windows.push(e.clone());
+            }
+        }
+        out
     }
 
     /// Index of the entry with exactly this identity.
@@ -164,6 +180,24 @@ mod tests {
             },
             ignored: false,
         }
+    }
+
+    #[test]
+    fn fallback_adds_only_unknown_applications() {
+        let mut fixed = Layout::default();
+        fixed.merge(vec![entry("A", 1)]);
+        let mut auto = Layout::default();
+        auto.merge(vec![entry("A2", 50)]);
+        let mut other = entry("X", 70);
+        other.identity.exe_path = "C:\\other.exe".into();
+        auto.merge(vec![other]);
+        let eff = fixed.with_fallback(&auto);
+        // Same exe+class as the fixed entry: ignored; other.exe is added.
+        assert_eq!(eff.windows.len(), 2);
+        assert_eq!(eff.windows[0].identity.title, "A");
+        assert_eq!(eff.windows[1].identity.exe_path, "C:\\other.exe");
+        // Fixed layout is untouched.
+        assert_eq!(fixed.windows.len(), 1);
     }
 
     #[test]
